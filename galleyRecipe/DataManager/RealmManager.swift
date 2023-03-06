@@ -34,7 +34,7 @@ final class RealmManager: RealmManagerProtocol {
 
         setDefaultValueForChips()
 
-        resetChips()
+//        resetChips()
     }
 
 // MARK: - favorite recipes manager
