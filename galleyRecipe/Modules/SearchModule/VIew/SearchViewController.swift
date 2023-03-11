@@ -7,7 +7,7 @@
 
 import UIKit
 import RealmSwift
-import Kingfisher
+// import Kingfisher
 
 final class SearchViewController: GradientViewController {
     enum Localization {
@@ -17,12 +17,26 @@ final class SearchViewController: GradientViewController {
         static let placeholder: String = "UIKit Soup"
     }
 
-    var presenter: SearchViewPresenterProtocol
-    private var topConstraint: NSLayoutConstraint!
+    private var presenter: SearchViewPresenterProtocol
+    private var keyboardHeightConstraint: NSLayoutConstraint!
+    private var timer: Timer?
+    private var searchBarRequestString: String = ""
+    private var showEmptyTable = false
 
     // MARK: - UI Components
-    let categoryCollectionView = ChipsCollectionView()
-    let countryCollectionView = ChipsCollectionView()
+    private let categoryCollectionView: ChipsCollectionView = {
+        let collection = ChipsCollectionView()
+        collection.translatesAutoresizingMaskIntoConstraints = false
+
+        return collection
+    }()
+
+    private let countryCollectionView: ChipsCollectionView = {
+        let collection = ChipsCollectionView()
+        collection.translatesAutoresizingMaskIntoConstraints = false
+
+        return collection
+    }()
 
     private let searchBar: UISearchBar = {
         let searchBar = UISearchBar()
@@ -38,6 +52,7 @@ final class SearchViewController: GradientViewController {
         searchBar.layer.cornerRadius = 16
         searchBar.layer.borderWidth = 1
         searchBar.layer.borderColor = UIColor.customBorderColor.cgColor
+
         return searchBar
     }()
 
@@ -115,11 +130,23 @@ final class SearchViewController: GradientViewController {
 
         setLayout()
         presenter.setDeafaultChips()
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(UIInputViewController.dismissKeyboard))
+        tap.cancelsTouchesInView = false
+        view.addGestureRecognizer(tap)
+
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow), name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillHide), name: UIResponder.keyboardWillHideNotification, object: nil)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         tableView.reloadData()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        view.endEditing(true)
     }
 
     @objc
@@ -134,40 +161,72 @@ final class SearchViewController: GradientViewController {
             }
         })
     }
+
+    // MARK: - keyboardManager
+    @objc
+    func dismissKeyboard() {
+        view.endEditing(true)
+    }
+
+    @objc
+    func keyboardWillShow(notification: NSNotification) {
+        if let keyboardSize = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue {
+            animateWithKeyboard(notification: notification) { (_) in
+                self.keyboardHeightConstraint.constant = .characterXAnchor - .tableViewHeader + (keyboardSize.height / 2) - (self.textLabel.frame.height * 2)
+            }
+        }
+    }
+
+    @objc
+    func keyboardWillHide(notification: NSNotification) {
+        animateWithKeyboard(notification: notification) { (_) in
+            self.keyboardHeightConstraint.constant = .characterXAnchor - .tableViewHeader
+        }
+    }
 }
 // MARK: - TableViewDelegate & TableViewDataSource
-extension SearchViewController: UITableViewDelegate, UITableViewDataSource, UIGestureRecognizerDelegate {
+extension SearchViewController: UITableViewDelegate, UITableViewDataSource {
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { return presenter.recipes?.count ?? 0 }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        guard let cell = tableView.dequeueReusableCell(withIdentifier: CustomTableViewCell.identifier,
-                                                       for: indexPath) as?
-                CustomTableViewCell else { return UITableViewCell() }
-        cell.selectionStyle = .none
+        if showEmptyTable {
+            guard let cell = tableView.dequeueReusableCell(withIdentifier: CustomTableViewCell.identifier, for: indexPath) as? CustomTableViewCell else { return UITableViewCell() }
+            cell.configureEmptyCell(isEmpty: true)
+            tableView.isScrollEnabled = false
+            return cell
+        } else {
+            guard let cell = tableView.dequeueReusableCell(withIdentifier: CustomTableViewCell.identifier,
+                                                           for: indexPath) as?
+                    CustomTableViewCell else { return UITableViewCell() }
+            cell.selectionStyle = .none
 
-        guard let model = presenter.recipes?[indexPath.row] else { return UITableViewCell() }
+            guard let model = presenter.recipes?[indexPath.row] else { return UITableViewCell() }
 
-        let favoriteButton = { [weak self] in
-            guard let self = self else { return }
-            self.presenter.saveOrDeleteFavoriteRecipe(id: model.id)
-            cell.changeFavoriteButtonIcon(isFavorite: self.presenter.checkRecipeInRealm(id: model.id))
+            let favoriteButton = { [weak self] in
+                guard let self = self else { return }
+                self.presenter.saveOrDeleteFavoriteRecipe(id: model.id)
+                cell.changeFavoriteButtonIcon(isFavorite: self.presenter.checkRecipeInRealm(id: model.id))
+            }
+
+            let timerButotn = {
+            }
+
+            cell.configure(recipeDescription: model.title,
+                           imageUrlString: model.image,
+                           favoriteButton: favoriteButton,
+                           timerButotn: timerButotn,
+                           isFavorite: presenter.checkRecipeInRealm(id: model.id))
+
+            tableView.isScrollEnabled = true
+            return cell
         }
-
-        let timerButotn = {
-        }
-
-        cell.configure(recipeDescription: model.title,
-                       imageUrlString: model.image,
-                       favoriteButton: favoriteButton,
-                       timerButotn: timerButotn,
-                       isFavorite: presenter.checkRecipeInRealm(id: model.id))
-
-        return cell
     }
 
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        presenter.tapOnTheRecipe()
+        if !showEmptyTable {
+            presenter.tapOnTheRecipe()
+        }
     }
 
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat { return .recipeTableViewCellHeigh }
@@ -245,11 +304,17 @@ extension SearchViewController: UICollectionViewDelegate, UICollectionViewDataSo
         if collectionView == self.categoryCollectionView {
             presenter.updateMealItem(indexPath: indexPath.item)
             let item = presenter.getMealObjs()[indexPath.item]
-            presenter.updateMealQueryItems(key: .mealType, itemValue: item.mealType, append: item.isSelectedCell)
+            let append = item.isSelectedCell ? UpdateQueryItemsArray.add : UpdateQueryItemsArray.delete
+            presenter.updateQueryItems(key: .mealType, itemValue: item.mealType, oldItemValue: nil, action: append)
+            showEmptyTable = true
+            tableView.reloadData()
         } else {
             presenter.updateCuisineItem(indexPath: indexPath.item)
             let item = presenter.getCuisineObjs()[indexPath.item]
-            presenter.updateMealQueryItems(key: .countryType, itemValue: item.cuisine, append: item.isSelectedCell)
+            let append = item.isSelectedCell ? UpdateQueryItemsArray.add : UpdateQueryItemsArray.delete
+            presenter.updateQueryItems(key: .countryType, itemValue: item.cuisine, oldItemValue: nil, action: append)
+            showEmptyTable = true
+            tableView.reloadData()
         }
         collectionView.reloadData()
     }
@@ -276,10 +341,27 @@ extension SearchViewController: UICollectionViewDelegateFlowLayout {
 // MARK: - SeachBarDelegate
 extension SearchViewController: UISearchBarDelegate {
 
+    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
+
+        showEmptyTable = true
+        tableView.reloadData()
+
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: false, block: { [weak self] _ in
+            guard let self = self else { return }
+            if searchText == "" {
+                self.presenter.updateQueryItems(key: .mealType, itemValue: self.searchBarRequestString, oldItemValue: nil, action: .delete)
+            } else {
+                self.presenter.updateQueryItems(key: .mealType, itemValue: searchText, oldItemValue: self.searchBarRequestString, action: .update)
+                self.searchBarRequestString = searchText
+            }
+        })
+    }
 }
 // MARK: - View Protocol
 extension SearchViewController: SearchViewProtocol {
     func success() {
+        showEmptyTable = false
         tableView.reloadData()
 
         if presenter.recipes?.count != 0 {
@@ -314,11 +396,10 @@ extension SearchViewController {
         tableHeaderView.addSubview(countryCollectionView)
         tableHeaderView.addSubview(sortButton)
         view.addSubview(tableHeaderView)
-        categoryCollectionView.translatesAutoresizingMaskIntoConstraints = false
-        countryCollectionView.translatesAutoresizingMaskIntoConstraints = false
 
         navigationController?.navigationBar.showsLargeContentViewer = false
         tableView.tableHeaderView = tableHeaderView
+        keyboardHeightConstraint = view.centerYAnchor.constraint(equalTo: characterLabel.centerYAnchor, constant: .characterXAnchor - .tableViewHeader)
 
         view.addSubview(characterLabel)
         view.addSubview(textLabel)
@@ -329,10 +410,11 @@ extension SearchViewController {
             tableView.leftAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leftAnchor),
             tableView.rightAnchor.constraint(equalTo: view.safeAreaLayoutGuide.rightAnchor),
 
-            tableHeaderView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            tableHeaderView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: .smallTopAndBottomInset),
             tableHeaderView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableHeaderView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableHeaderView.heightAnchor.constraint(equalToConstant: .advancedTableViewHeader),
+            tableHeaderView.widthAnchor.constraint(equalToConstant: view.frame.width),
 
             searchBar.leftAnchor.constraint(equalTo: tableHeaderView.leftAnchor, constant: .mediemLeftRightInset),
             sortButton.leftAnchor.constraint(equalTo: searchBar.rightAnchor, constant: .sortButtonLeftAnchor),
@@ -350,11 +432,11 @@ extension SearchViewController {
             categoryCollectionView.heightAnchor.constraint(equalToConstant: .collectionViewCellHeigh),
 
             countryCollectionView.leadingAnchor.constraint(equalTo: tableHeaderView.leadingAnchor),
-            countryCollectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            countryCollectionView.trailingAnchor.constraint(equalTo: tableHeaderView.trailingAnchor),
             countryCollectionView.topAnchor.constraint(equalTo: categoryCollectionView.bottomAnchor, constant: .smallTopAndBottomInset),
             countryCollectionView.heightAnchor.constraint(equalToConstant: .collectionViewCellHeigh),
 
-            view.centerYAnchor.constraint(equalTo: characterLabel.centerYAnchor, constant: .characterXAnchor - .collectionViewCellHeigh * 2 - .smallTopAndBottomInset * 2),
+            keyboardHeightConstraint, // characterLabel.centerYAcnchor
             characterLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
 
             textLabel.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
